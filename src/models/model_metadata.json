@@ -1,0 +1,1 @@
+{"features": ["x", "y", "speed", "heading", "accel", "turn_rate"], "input_window": 20, "future_steps": 5}

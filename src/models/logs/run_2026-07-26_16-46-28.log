@@ -1,0 +1,4 @@
+[2026-07-26 16:46:28] [RUN] GeoLife pipeline run started.
+[2026-07-26 16:46:28] [RUN] Loading parquet and building trajectories...
+[2026-07-26 16:47:38] [RUN] Total trajectories after filtering: 15682
+[2026-07-26 16:47:38] [ERROR] Exception during run: name 'log_trajectory_length_histogram' is not defined

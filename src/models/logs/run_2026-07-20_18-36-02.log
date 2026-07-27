@@ -1,0 +1,46 @@
+[2026-07-20 18:36:02] [RUN] GeoLife pipeline run started.
+[2026-07-20 18:36:02] [RUN] Loading parquet and building trajectories...
+[2026-07-20 18:37:09] [RUN] Total trajectories after filtering: 15682
+[2026-07-20 18:37:09] [RUN] Computing global normalization stats...
+[2026-07-20 18:37:24] [RUN] Normalization mean: [ 2.4862758e+05  1.0663836e+06  2.4693177e+00 -7.3960446e-02
+ -1.8531182e-01  1.1432741e-05]
+[2026-07-20 18:37:24] [RUN] Normalization std:  [7.3249862e+05 1.8168801e+06 6.9189801e+00 1.3127433e+00 3.6505289e+02
+ 4.9596074e-01]
+[2026-07-20 18:37:25] [RUN] Split: train=9409, val=3136, test=3137
+[2026-07-20 18:37:25] [SAVE] Normalization stats saved → norm_mean.npy, norm_std.npy
+[2026-07-20 18:37:25] [SAVE] Metadata saved → ./models\model_metadata.json
+[2026-07-20 18:37:25] [RUN] Baseline evaluation started...
+[2026-07-20 18:40:25] [RUN] Baseline evaluation complete — batches=3136, time=180.43s
+[2026-07-20 18:40:39] [RUN] Baseline (VAL) — ADE: 0.000 m, MDE: 1.732 m, FDE: 0.000 m
+[2026-07-20 18:40:39] [RUN] Baseline evaluation started...
+[2026-07-20 18:43:21] [RUN] Baseline evaluation complete — batches=3137, time=161.46s
+[2026-07-20 18:43:32] [RUN] Baseline (TEST) — ADE: 0.000 m, MDE: 8.448 m, FDE: 0.000 m
+[2026-07-20 18:43:51] [RUN] Training GRU started (epochs=20, max_batches=200)
+[2026-07-20 19:17:07] [RUN] Training GRU complete — time=1990.96s
+[2026-07-20 19:17:07] [SAVE] gru model saved → ./models\gru_model.pt
+[2026-07-20 19:17:07] [RUN] GRU prediction (VAL) started...
+[2026-07-20 19:17:52] [RUN] GRU prediction (VAL) complete — batches=200, time=44.92s
+[2026-07-20 19:17:52] [RUN] GRU prediction (TEST) started...
+[2026-07-20 19:18:39] [RUN] GRU prediction (TEST) complete — batches=200, time=46.93s
+[2026-07-20 19:18:39] [RUN] GRU (VAL) — ADE: 0.012 m, MDE: 0.122 m, FDE: 0.009 m
+[2026-07-20 19:18:40] [RUN] GRU (TEST) — ADE: 0.014 m, MDE: 6.720 m, FDE: 0.010 m
+[2026-07-20 19:18:41] [RUN] Training LSTM started (epochs=20, max_batches=200)
+[2026-07-20 19:40:31] [RUN] Training LSTM complete — time=1310.58s
+[2026-07-20 19:40:31] [SAVE] lstm model saved → ./models\lstm_model.pt
+[2026-07-20 19:40:31] [RUN] LSTM prediction (VAL) started...
+[2026-07-20 19:40:59] [RUN] LSTM prediction (VAL) complete — batches=200, time=27.64s
+[2026-07-20 19:40:59] [RUN] LSTM prediction (TEST) started...
+[2026-07-20 19:41:27] [RUN] LSTM prediction (TEST) complete — batches=200, time=28.43s
+[2026-07-20 19:41:28] [RUN] LSTM (VAL) — ADE: 0.006 m, MDE: 0.127 m, FDE: 0.004 m
+[2026-07-20 19:41:28] [RUN] LSTM (TEST) — ADE: 0.009 m, MDE: 6.716 m, FDE: 0.007 m
+[2026-07-20 19:41:29] [RUN] Training TCN started (epochs=20, max_batches=200)
+[2026-07-20 20:22:42] [RUN] Training TCN complete — time=2473.30s
+[2026-07-20 20:22:42] [SAVE] tcn model saved → ./models\tcn_model.pt
+[2026-07-20 20:22:42] [RUN] TCN prediction (VAL) started...
+[2026-07-20 20:23:30] [RUN] TCN prediction (VAL) complete — batches=200, time=47.15s
+[2026-07-20 20:23:30] [RUN] TCN prediction (TEST) started...
+[2026-07-20 20:24:22] [RUN] TCN prediction (TEST) complete — batches=200, time=52.47s
+[2026-07-20 20:24:23] [RUN] TCN (VAL) — ADE: 0.014 m, MDE: 0.765 m, FDE: 0.019 m
+[2026-07-20 20:24:23] [RUN] TCN (TEST) — ADE: 0.048 m, MDE: 6.700 m, FDE: 0.083 m
+[2026-07-20 20:24:24] [RUN] Final summary table printed.
+[2026-07-20 20:24:24] [RUN] GeoLife pipeline run completed successfully.

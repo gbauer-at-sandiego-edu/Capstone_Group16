@@ -1,0 +1,10 @@
+[2026-07-20 18:30:29] [RUN] GeoLife pipeline run started.
+[2026-07-20 18:30:29] [RUN] Loading parquet and building trajectories...
+[2026-07-20 18:31:54] [RUN] Total trajectories after filtering: 15682
+[2026-07-20 18:31:55] [RUN] Computing global normalization stats...
+[2026-07-20 18:32:55] [RUN] Normalization mean: [ 2.4862758e+05  1.0663836e+06  2.4693177e+00 -7.3960446e-02
+ -1.8531182e-01  1.1432741e-05]
+[2026-07-20 18:32:55] [RUN] Normalization std:  [7.3249862e+05 1.8168801e+06 6.9189801e+00 1.3127433e+00 3.6505289e+02
+ 4.9596074e-01]
+[2026-07-20 18:32:56] [RUN] Split: train=9409, val=3136, test=3137
+[2026-07-20 18:32:56] [ERROR] Exception during run: 'charmap' codec can't encode character '\u2192' in position 55: character maps to <undefined>
