@@ -1,0 +1,8 @@
+{
+  "model_name": "TCN",
+  "epochs": 20,
+  "lr": 0.001,
+  "max_batches": 400,
+  "max_windows_per_traj": 3000,
+  "timestamp": "2026-08-02 15:36:50"
+}
