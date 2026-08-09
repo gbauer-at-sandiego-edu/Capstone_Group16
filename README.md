@@ -1,4 +1,23 @@
+# 🚀 Short‑Horizon GPS Trajectory Forecasting  
+...
 ```
+
+And it should **not** end with:
+
+```
+```
+```
+
+Those backticks force GitHub to treat the entire file as a code block.
+
+---
+
+# ⭐ Here is your README **correctly formatted**, with **all backticks removed**, ready to paste directly into GitHub
+
+Paste **exactly this** into `README.md`:
+
+---
+
 # 🚀 Short‑Horizon GPS Trajectory Forecasting  
 ### Deep Sequence Models for Real‑Time Mobility Analytics  
 **GRU • LSTM • Temporal Convolutional Network (TCN)**  
@@ -26,8 +45,8 @@ Capstone_Group16/
 │   └── Visualization.ipynb
 │
 ├── data/
-│   ├── raw/            # Raw GeoLife .plt files (not included)
-│   └── processed/      # Parquet + optional CSVs
+│   ├── raw/
+│   └── processed/
 │
 ├── src/
 │   ├── geolife_pipeline.py
@@ -284,4 +303,4 @@ This project was completed as part of **AAI‑590 Capstone** in the
 **Master of Science in Applied Artificial Intelligence** program  
 at the **University of San Diego**.
 
-```
+---
