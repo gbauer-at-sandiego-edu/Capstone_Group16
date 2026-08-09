@@ -1,3 +1,34 @@
+"""
+models_geolife.py
+=================
+
+This module implements the full GeoLife trajectory‑forecasting pipeline:
+
+    • Loading and preprocessing trajectories from parquet
+    • Global normalization (leakage‑safe)
+    • Window generation for multi‑step forecasting
+    • Baseline predictor
+    • GRU / LSTM / TCN models (in Part 2)
+    • Training + prediction loops (in Part 2)
+    • Metrics + summary tables
+    • Full orchestration (in Part 2)
+
+The rewrite emphasizes *engineering‑grade clarity*, explaining:
+
+    • Why each architectural choice exists
+    • How data flows through the pipeline
+    • Why normalization is global
+    • Why leakage is avoided by design
+    • Why windowing is structured this way
+    • Why the logging system ensures reproducibility
+    • How metrics are computed and why they matter
+
+This file is intentionally verbose to support capstone‑level documentation.
+"""
+
+# =====================================================================
+# Imports
+# =====================================================================
 import time
 import json
 import os
@@ -9,100 +40,104 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+
 # =====================================================================
 # GLOBAL CONFIGURATION
 # =====================================================================
-# Core configuration knobs for the entire pipeline. Changing these
-# affects data processing, model behavior, and training dynamics.
+"""
+These configuration knobs define the behavior of the entire pipeline.
+They are centralized so experiments remain reproducible and easy to tune.
+"""
 
-# Path to the GeoLife parquet dataset. This is the single data source
-# for all experiments in this module.
-PARQUET_PATH = r"C:\Users\gb630\OneDrive\USD AAI\USD AAI\AAI-590 CAPSTONE\FINAL PROJECT\Data\geolife.parquet"
+# Path to the unified GeoLife parquet dataset produced by geolife_pipeline.py.
+PARQUET_PATH = (
+    r"C:\Users\gb630\OneDrive\USD AAI\USD AAI\AAI-590 CAPSTONE\FINAL PROJECT\Data\geolife.parquet"
+)
 
-# Ordered list of feature columns expected in the parquet file.
-# The order is important because models and normalization assume this
-# exact layout. Any change here must be reflected in model input sizes.
+# Ordered list of feature columns extracted from the parquet file.
+# Order matters because:
+#   • Models assume this exact layout
+#   • Normalization vectors follow this order
+#   • Window generator slices based on this order
 FEATURES = ["x", "y", "speed", "heading", "accel", "turn_rate"]
 
-# Number of past timesteps used as input to the models. Defines the
-# length of each window and the temporal context the models see.
+# Number of past timesteps fed into the model.
+# This defines the receptive field for GRU/LSTM/TCN.
 INPUT_WINDOW = 20
 
-# Number of future timesteps to predict. Models output FUTURE_STEPS
-# displacement vectors relative to the last input position.
+# Number of future timesteps to predict.
+# Models output FUTURE_STEPS displacement vectors relative to the last input position.
 FUTURE_STEPS = 5
 
-# Device selection. Using CPU keeps behavior simple and reproducible.
-# This can be changed to "cuda" if GPU acceleration is desired.
+# Device selection — CPU is used for reproducibility and simplicity.
 DEVICE = "cpu"
 
-# Heartbeat interval (seconds) for long-running loops. Heartbeats give
-# coarse-grained progress and resource usage without flooding logs.
+# Heartbeat interval for long‑running loops.
 HEARTBEAT_INTERVAL = 5.0
 
-# How often (in batches) to print progress during training/prediction.
+# How often to print progress during training/prediction.
 PROGRESS_BATCH_INTERVAL = 10
 
-# Threshold (meters) to detect and filter out GPS glitches. Any jump
-# between consecutive points larger than this is treated as invalid.
+# Threshold (meters) to detect GPS glitches.
+# Any displacement > threshold is treated as invalid and filtered out.
 GLITCH_THRESHOLD_METERS = 100.0
 
-# Directories for model artifacts and logs. Keeping these centralized
-# makes it easy to archive runs and inspect results.
+# Directories for model artifacts and logs.
 MODEL_DIR = "./models"
 LOG_DIR = os.path.join(MODEL_DIR, "logs")
 os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# =====================================================================
-# LOGGING SYSTEM (Dual Logging + Timestamps)
-# =====================================================================
-# Design goals:
-# - Real-time feedback via stdout
-# - Persistent log across runs
-# - Per-run log for detailed analysis
-# - Human-readable timestamps
 
-# Unique timestamp for this run, used to name the per-run log file.
+# =====================================================================
+# LOGGING SYSTEM — Dual Logging + Timestamps
+# =====================================================================
+"""
+The logging system is designed for reproducibility and post‑run analysis.
+
+It writes:
+    • Real‑time feedback to stdout
+    • A persistent log across all runs
+    • A per‑run log for detailed inspection
+
+All logs include human‑readable timestamps.
+"""
+
 run_timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-
-# Persistent log accumulates all runs.
 persistent_log_path = os.path.join(LOG_DIR, "geolife.log")
-
-# Per-run log contains only entries from this execution.
 run_log_path = os.path.join(LOG_DIR, f"run_{run_timestamp}.log")
 
 
 def log(msg: str) -> None:
     """
-    Write high-level events to stdout AND both log files (UTF-8 safe).
+    Write high‑level events to stdout AND both log files.
 
-    Intended for:
-      - Phase boundaries (start/end of training, prediction, etc.)
-      - Major milestones
-      - Errors and important status messages
+    This function is used for:
+        • Phase boundaries (training start/end)
+        • Major milestones
+        • Errors
+        • Summary metrics
+
+    Logging is UTF‑8 safe and append‑only.
     """
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{timestamp}] {msg}"
 
-    # stdout for immediate visibility
     print(entry)
 
-    # persistent log (UTF-8)
     with open(persistent_log_path, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
 
-    # per-run log (UTF-8)
     with open(run_log_path, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
 
 
 # =====================================================================
-# Utility: human-friendly ETA
+# Utility: Human‑Friendly ETA
 # =====================================================================
 def format_eta(seconds: float | None) -> str:
     """
-    Convert a raw seconds estimate into a human-friendly ETA string.
+    Convert a raw seconds estimate into a human‑friendly ETA string.
 
     Used in training/prediction loops to give rough time remaining.
     """
@@ -115,51 +150,54 @@ def format_eta(seconds: float | None) -> str:
 
 
 # =====================================================================
-# Load and preprocess trajectories
+# Load and Preprocess Trajectories
 # =====================================================================
 def load_trajectories(path: str) -> list[np.ndarray]:
     """
     Load trajectories from a parquet file and apply glitch filtering.
 
-    Architecture:
-      - Read parquet row-group by row-group to avoid loading everything
-        into memory at once.
-      - Group rows by 'source_file' to reconstruct individual trajectories.
-      - Extract only configured FEATURES.
-      - Compute per-step displacement to detect GPS glitches.
-      - Filter out steps where displacement exceeds GLITCH_THRESHOLD_METERS.
-      - Discard trajectories too short to support windowing.
+    WHY THIS DESIGN:
+    ----------------
+    • GeoLife parquet files can be large (millions of rows).
+      Reading row‑groups avoids loading everything into memory.
 
-    Returns:
-      List of filtered trajectories, each as a NumPy array of shape
-      [num_steps, num_features].
+    • Grouping by 'source_file' reconstructs individual trajectories
+      exactly as they were recorded.
+
+    • Only FEATURES are extracted — this keeps memory usage low and
+      ensures models receive consistent input.
+
+    • GPS glitches (large jumps) are filtered using a displacement
+      threshold. This prevents unrealistic velocities from corrupting
+      training.
+
+    • Trajectories too short to produce at least one window are discarded.
+
+    RETURNS:
+        List of trajectories, each shaped [num_steps, num_features].
     """
     log("[RUN] Loading parquet and building trajectories...")
     pf = pq.ParquetFile(path)
     trajectories: list[np.ndarray] = []
 
     for rg in range(pf.num_row_groups):
-        # Read one row-group at a time to control memory usage.
         tbl = pf.read_row_group(rg)
         df = tbl.to_pandas()
 
-        # Group by source_file so each group represents one trajectory.
+        # Group rows by source_file — each group is one trajectory.
         for src, traj in df.groupby("source_file"):
-            # Extract only the configured features and cast to float32
-            # for PyTorch compatibility and memory efficiency.
+            # Extract configured features and cast to float32 for PyTorch.
             t = traj[FEATURES].to_numpy(dtype=np.float32)
 
-            # Compute displacement between consecutive positions (x, y).
+            # Compute displacement between consecutive (x, y) positions.
             coords = t[:, 0:2]
             deltas = np.linalg.norm(coords[1:] - coords[:-1], axis=1)
 
-            # Build a mask that keeps the first point and any subsequent
-            # point whose displacement is below the glitch threshold.
+            # Mask keeps first point + any point below glitch threshold.
             mask = np.concatenate([[True], deltas <= GLITCH_THRESHOLD_METERS])
             t_filtered = t[mask]
 
-            # Skip trajectories that cannot produce at least one window
-            # of INPUT_WINDOW plus FUTURE_STEPS.
+            # Skip trajectories too short for windowing.
             if len(t_filtered) <= INPUT_WINDOW + FUTURE_STEPS:
                 continue
 
@@ -169,25 +207,33 @@ def load_trajectories(path: str) -> list[np.ndarray]:
     return trajectories
 
 
+# =====================================================================
+# Global Normalization (Leakage‑Safe)
+# =====================================================================
 def compute_normalization(trajectories: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute global mean and std across all trajectories.
 
-    Architectural choice:
-      - Use global normalization so train/val/test share the same scale.
-      - This avoids leakage because normalization is computed before
-        splitting and applied consistently.
+    WHY GLOBAL NORMALIZATION:
+    -------------------------
+    • Normalization must be computed BEFORE splitting into train/val/test
+      to avoid leakage.
 
-    Returns:
-      (mean, std) vectors of shape [num_features].
+    • Using global stats ensures:
+        - All splits share the same scale
+        - Models generalize better
+        - No trajectory receives privileged scaling
+
+    RETURNS:
+        mean, std — vectors shaped [num_features].
     """
     log("[RUN] Computing global normalization stats...")
-    # Concatenate all trajectories along time axis to compute stats.
+
     all_data = np.concatenate(trajectories, axis=0)
     mean = all_data.mean(axis=0)
     std = all_data.std(axis=0)
 
-    # Avoid division-by-zero during normalization.
+    # Prevent division‑by‑zero.
     std[std == 0] = 1.0
 
     log(f"[RUN] Normalization mean: {mean}")
@@ -195,6 +241,9 @@ def compute_normalization(trajectories: list[np.ndarray]) -> tuple[np.ndarray, n
     return mean, std
 
 
+# =====================================================================
+# Split Trajectories (Leakage‑Avoidant)
+# =====================================================================
 def split_trajectories(
     trajectories: list[np.ndarray],
     train_ratio: float = 0.6,
@@ -203,12 +252,19 @@ def split_trajectories(
     """
     Split trajectories into train/val/test sets at the trajectory level.
 
-    Design decision:
-      - Splitting by trajectory (not by window) avoids leakage where
-        windows from the same trajectory appear in multiple splits.
+    WHY SPLIT BY TRAJECTORY:
+    ------------------------
+    Splitting by window would cause leakage:
+        • Windows from the same trajectory could appear in multiple splits.
+        • Models would implicitly "see" future behavior during training.
 
-    Returns:
-      (train, val, test) lists of trajectories.
+    Splitting by trajectory ensures:
+        • Train/val/test are independent
+        • No temporal leakage
+        • Metrics reflect true generalization
+
+    RETURNS:
+        train, val, test — lists of trajectories.
     """
     n = len(trajectories)
     indices = np.arange(n)
@@ -226,7 +282,7 @@ def split_trajectories(
 
 
 # =====================================================================
-# Window generator
+# Window Generator — Multi‑Step Forecasting
 # =====================================================================
 def stream_multistep_batches(
     trajectories: list[np.ndarray],
@@ -234,30 +290,36 @@ def stream_multistep_batches(
     std: np.ndarray,
 ):
     """
-    Generator that yields windowed inputs and multi-step targets.
+    Generator that yields windowed inputs and multi‑step targets.
 
-    Processing steps:
-      - Apply global normalization to each trajectory.
-      - Slide a window of length INPUT_WINDOW across the trajectory.
-      - For each window:
-          * Extract features and transpose to [features, time] for TCN.
-          * Compute FUTURE_STEPS absolute positions.
-          * Convert absolute positions to displacements relative to the
-            last position in the window.
+    WHY THIS DESIGN:
+    ----------------
+    • Global normalization is applied per trajectory.
+    • Sliding window produces INPUT_WINDOW past steps.
+    • FUTURE_STEPS future positions are converted to displacements
+      relative to the last window position.
 
-    Yields:
-      (windows_tensor, targets_tensor) per trajectory, where:
-        windows_tensor: [batch_size, features, INPUT_WINDOW]
-        targets_tensor: [batch_size, FUTURE_STEPS, 2]
+    WHY DISPLACEMENTS:
+    ------------------
+    Predicting absolute coordinates is harder because:
+        • Trajectories vary widely in global position
+        • Models must learn both motion AND geography
+
+    Predicting displacements:
+        • Centers the prediction problem
+        • Makes learning easier
+        • Improves generalization
+
+    YIELDS:
+        windows_tensor: [batch, features, INPUT_WINDOW]
+        targets_tensor: [batch, FUTURE_STEPS, 2]
     """
     total_windows = 0
     n_traj = len(trajectories)
 
     for idx, t in enumerate(trajectories, start=1):
-        # Global normalization ensures consistent scaling across splits.
         t_norm = (t - mean) / std
 
-        # Number of possible windows for this trajectory.
         n = len(t_norm) - INPUT_WINDOW - FUTURE_STEPS
         if n <= 0:
             continue
@@ -266,16 +328,16 @@ def stream_multistep_batches(
         targets = []
 
         for i in range(n):
-            # Extract window and transpose to [features, time].
+            # Window: shape [features, time]
             w = t_norm[i:i + INPUT_WINDOW].T
 
-            # Future absolute positions for the next FUTURE_STEPS.
+            # Future absolute positions (x, y)
             future_abs = t_norm[i + INPUT_WINDOW:i + INPUT_WINDOW + FUTURE_STEPS, 0:2]
 
-            # Last position in the window is the reference point.
+            # Last position in window
             last_pos = t_norm[i + INPUT_WINDOW - 1, 0:2]
 
-            # Displacements relative to last window position.
+            # Convert to displacements
             future_disp = future_abs - last_pos
 
             windows.append(w)
@@ -284,7 +346,6 @@ def stream_multistep_batches(
         batch_windows = len(windows)
         total_windows += batch_windows
 
-        # stdout-only progress (not logged to avoid log noise).
         print(
             f"[TRAJ {idx}/{n_traj}] {len(t)} rows → "
             f"{batch_windows} windows (total_windows={total_windows})"
@@ -294,16 +355,20 @@ def stream_multistep_batches(
 
 
 # =====================================================================
-# Baseline
+# Baseline Predictor — Constant Velocity
 # =====================================================================
 def baseline_predict(windows: np.ndarray) -> np.ndarray:
     """
-    Simple constant-velocity baseline.
+    Constant‑velocity baseline.
 
-    Logic:
-      - Use last two positions in the window.
-      - Compute displacement between them.
-      - Assume this displacement repeats for all FUTURE_STEPS.
+    WHY THIS BASELINE:
+    ------------------
+    • Provides a simple reference point.
+    • Helps evaluate whether ML models actually learn meaningful motion.
+    • Uses last two positions to estimate velocity and repeats it.
+
+    RETURNS:
+        preds: [batch, FUTURE_STEPS, 2]
     """
     last_pos = windows[:, 0:2, -1]
     prev_pos = windows[:, 0:2, -2]
@@ -319,11 +384,14 @@ def evaluate_baseline(
     """
     Evaluate baseline across all trajectories.
 
-    Architecture:
-      - Reuse the same window generator as models.
-      - Apply baseline_predict to each batch.
-      - Accumulate predictions and targets for metrics.
-      - Print heartbeats with CPU/RAM usage for observability.
+    WHY THIS DESIGN:
+    ----------------
+    • Reuses the same window generator as ML models.
+    • Ensures baseline is evaluated under identical conditions.
+    • Heartbeats provide observability during long runs.
+
+    RETURNS:
+        preds_all, targets_all — stacked arrays for metric computation.
     """
     log("[RUN] Baseline evaluation started...")
     preds_all: list[np.ndarray] = []
@@ -343,10 +411,9 @@ def evaluate_baseline(
         targets_all.append(targets_np)
 
         batch_count += 1
-
         now = time.time()
+
         if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-            # heartbeat prints only (NOT logged)
             cpu = psutil.cpu_percent()
             mem = psutil.virtual_memory().used / (1024**3)
             print(
@@ -362,28 +429,40 @@ def evaluate_baseline(
 
 
 # =====================================================================
-# Metrics
+# Metrics — ADE / MDE / FDE
 # =====================================================================
 def ade(preds: np.ndarray, targets: np.ndarray) -> float:
     """
-    Average Displacement Error (ADE):
-    Mean Euclidean distance across all timesteps and samples.
+    ADE — Average Displacement Error.
+
+    WHY ADE:
+    --------
+    Measures average Euclidean error across all timesteps.
+    Captures overall trajectory accuracy.
     """
     return float(np.linalg.norm(preds - targets, axis=2).mean())
 
 
 def mde(preds: np.ndarray, targets: np.ndarray) -> float:
     """
-    Maximum Displacement Error (MDE):
-    Maximum Euclidean distance across all timesteps and samples.
+    MDE — Maximum Displacement Error.
+
+    WHY MDE:
+    --------
+    Captures worst‑case error across all timesteps.
+    Useful for safety‑critical applications.
     """
     return float(np.linalg.norm(preds - targets, axis=2).max())
 
 
 def fde(preds: np.ndarray, targets: np.ndarray) -> float:
     """
-    Final Displacement Error (FDE):
-    Mean Euclidean distance at the final timestep across samples.
+    FDE — Final Displacement Error.
+
+    WHY FDE:
+    --------
+    Measures error at the final timestep.
+    Critical for trajectory forecasting tasks where the endpoint matters.
     """
     return float(np.linalg.norm(preds[:, -1, :] - targets[:, -1, :], axis=1).mean())
 
@@ -402,16 +481,43 @@ def print_metrics(name: str, preds: np.ndarray, targets: np.ndarray) -> None:
 
 
 # =====================================================================
-# Models
+# Models — GRU / LSTM / TCN
 # =====================================================================
+"""
+This section defines the three forecasting models used in the pipeline.
+
+All models predict FUTURE_STEPS displacement vectors relative to the
+last input position. This framing makes the learning problem easier
+because models do not need to learn absolute geographic coordinates.
+
+The three architectures provide a baseline comparison:
+
+    • GRUModel — lightweight recurrent baseline
+    • LSTMModel — more expressive recurrent model
+    • TCNModel — convolutional model with dilations for long-range context
+
+Each model preserves the original function signatures exactly.
+"""
+
+
+# ---------------------------------------------------------------------
+# GRU Model
+# ---------------------------------------------------------------------
 class GRUModel(nn.Module):
     """
     GRU-based sequence model for multi-step displacement prediction.
 
-    Architecture:
-      - Single GRU layer (batch_first=True).
-      - Fully connected layer mapping last hidden state to FUTURE_STEPS*2.
-      - Output reshaped to [batch, FUTURE_STEPS, 2].
+    WHY GRU:
+    --------
+    • GRUs are simpler than LSTMs (fewer gates).
+    • They train faster and require fewer parameters.
+    • They handle moderate temporal dependencies well.
+
+    ARCHITECTURE:
+    -------------
+    • Single GRU layer (batch_first=True)
+    • Fully connected layer maps last hidden state → FUTURE_STEPS * 2
+    • Output reshaped to [batch, FUTURE_STEPS, 2]
     """
     def __init__(self, input_size: int = 6, hidden_size: int = 64, future_steps: int = FUTURE_STEPS):
         super().__init__()
@@ -421,14 +527,30 @@ class GRUModel(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [batch, seq_len, input_size]
         out, _ = self.gru(x)
+
         # Use last timestep hidden state as sequence summary.
         out = self.fc(out[:, -1, :])
+
+        # Reshape to [batch, FUTURE_STEPS, 2]
         return out.view(-1, FUTURE_STEPS, 2)
 
 
+# ---------------------------------------------------------------------
+# LSTM Model
+# ---------------------------------------------------------------------
 class LSTMModel(nn.Module):
     """
-    LSTM-based sequence model, analogous to GRUModel but with LSTM cells.
+    LSTM-based sequence model.
+
+    WHY LSTM:
+    ---------
+    • LSTMs handle longer-range dependencies than GRUs.
+    • Useful when motion patterns span many timesteps.
+
+    ARCHITECTURE:
+    -------------
+    • Single LSTM layer (batch_first=True)
+    • Fully connected layer maps last hidden state → FUTURE_STEPS * 2
     """
     def __init__(self, input_size: int = 6, hidden_size: int = 64, future_steps: int = FUTURE_STEPS):
         super().__init__()
@@ -441,17 +563,41 @@ class LSTMModel(nn.Module):
         return out.view(-1, FUTURE_STEPS, 2)
 
 
+# ---------------------------------------------------------------------
+# TCN Block — Dilated Convolution
+# ---------------------------------------------------------------------
 class TCNBlock(nn.Module):
     """
-    Single TCN block:
-      - Dilated 1D convolution
-      - BatchNorm
-      - ReLU
-      - No residual here (simplified baseline TCN)
+    Single TCN block.
+
+    WHY DILATIONS:
+    --------------
+    • Dilated convolutions expand the receptive field without increasing
+      parameter count.
+    • This allows the model to see long-range temporal patterns.
+    • Dilation schedule (1, 2, 4, ...) doubles receptive field each layer.
+
+    WHY BATCHNORM:
+    --------------
+    • Stabilizes training.
+    • Helps prevent exploding activations.
+
+    WHY NO RESIDUALS HERE:
+    ----------------------
+    • This is a simplified baseline TCN.
+    • Residuals improve stability but are omitted to preserve original
+      architecture exactly as provided.
+
+    WHY TRIMMING PADDING:
+    ----------------------
+    • Dilated convolutions require padding to maintain output length.
+    • After convolution, extra padded timesteps are removed so the output
+      matches the input length exactly.
     """
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, dilation: int = 1):
         super().__init__()
         padding = (kernel_size - 1) * dilation
+
         self.conv = nn.Conv1d(
             in_channels,
             out_channels,
@@ -465,42 +611,60 @@ class TCNBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.conv(x)
+
         # Trim extra padding so output length matches input length.
         if self.pad > 0:
             out = out[:, :, :-self.pad]
+
         return self.relu(self.bn(out))
 
 
+# ---------------------------------------------------------------------
+# TCN Model — Multi-Layer Dilated Convolution
+# ---------------------------------------------------------------------
 class TCNModel(nn.Module):
     """
-    Temporal Convolutional Network (simplified):
+    Temporal Convolutional Network (TCN).
 
-    Architecture:
-      - Stack of TCNBlock layers with increasing dilation.
-      - Final FC layer on last timestep features.
+    WHY TCN:
+    --------
+    • Convolutions are parallelizable → faster training than RNNs.
+    • Dilations allow exponential receptive field growth.
+    • TCNs often outperform RNNs on structured temporal data.
+
+    ARCHITECTURE:
+    -------------
+    • Stack of TCNBlock layers with dilation schedule 1, 2, 4, ...
+    • Final FC layer maps last timestep features → FUTURE_STEPS * 2
     """
     def __init__(self, input_size: int = 6, hidden_size: int = 64, levels: int = 3, kernel_size: int = 3):
         super().__init__()
+
         layers: list[nn.Module] = []
         in_ch = input_size
+
         for i in range(levels):
             dilation = 2 ** i
             layers.append(TCNBlock(in_ch, hidden_size, kernel_size, dilation))
             in_ch = hidden_size
+
         self.tcn = nn.Sequential(*layers)
         self.fc = nn.Linear(hidden_size, FUTURE_STEPS * 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # TCN expects [batch, channels, time].
+        # TCN expects [batch, channels, time]
         x = x.transpose(1, 2)
+
         out = self.tcn(x)
-        # Use last timestep features.
+
+        # Use last timestep features
         out = self.fc(out[:, :, -1])
+
         return out.view(-1, FUTURE_STEPS, 2)
 
 
 # =====================================================================
-# Training loop
+# Training Loop — Shared Across All Models
 # =====================================================================
 def train_model(
     model: nn.Module,
@@ -515,13 +679,24 @@ def train_model(
     """
     Train a model on windowed trajectories.
 
-    Design:
-      - Shared training loop for all models (GRU/LSTM/TCN).
-      - Uses MSE loss on displacement predictions.
-      - Progress + heartbeat logging for observability.
-      - max_batches caps per-epoch work for predictable runtime.
+    WHY THIS DESIGN:
+    ----------------
+    • Shared loop ensures GRU/LSTM/TCN are trained identically.
+    • MSE loss is appropriate because targets are displacement vectors.
+    • max_batches caps per-epoch work for predictable runtime.
+    • Heartbeats provide observability during long runs.
+
+    TRAINING FLOW:
+    --------------
+    1. Generate windows via stream_multistep_batches
+    2. Normalize inputs
+    3. Forward pass
+    4. Compute MSE loss
+    5. Backprop + optimizer step
+    6. Logging + heartbeats
     """
     log(f"[RUN] Training {model_name} started (epochs={epochs}, max_batches={max_batches})")
+
     model.to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
@@ -539,7 +714,7 @@ def train_model(
         print(f"[TRAIN] Epoch {epoch}/{epochs} started...")
 
         for windows_cpu, targets_cpu in stream_multistep_batches(trajectories, mean, std):
-            # Convert to device and permute to [batch, time, features].
+            # Convert to device and permute to [batch, time, features]
             windows = windows_cpu.to(DEVICE).permute(0, 2, 1)
             targets = targets_cpu.to(DEVICE)
 
@@ -552,17 +727,18 @@ def train_model(
 
             total_loss += loss.item()
             batches += 1
-
             now = time.time()
 
-            # Progress logging every PROGRESS_BATCH_INTERVAL batches.
+            # Progress logging
             if batches % PROGRESS_BATCH_INTERVAL == 0:
                 elapsed_epoch = now - epoch_start
                 completed_batches = (epoch - 1) * max_batches + batches
                 progress_batches = completed_batches / total_batches_est
                 eta_total = (elapsed_epoch * epochs * max_batches / batches) - elapsed_epoch
+
                 cpu = psutil.cpu_percent()
                 mem = psutil.virtual_memory().used / (1024**3)
+
                 print(
                     f"[TRAIN] Epoch {epoch} — "
                     f"Batches: {progress_batches * 100:.1f}% "
@@ -571,18 +747,18 @@ def train_model(
                     f"CPU={cpu:.1f}%, RAM={mem:.2f} GB"
                 )
 
-            # Heartbeat logging for long runs.
+            # Heartbeat logging
             if now - last_heartbeat >= HEARTBEAT_INTERVAL:
                 cpu = psutil.cpu_percent()
                 mem = psutil.virtual_memory().used / (1024**3)
                 elapsed = now - global_start
+
                 print(
                     f"[HEARTBEAT] Training... elapsed={elapsed:.1f}s, "
                     f"CPU={cpu:.1f}%, RAM={mem:.2f} GB"
                 )
                 last_heartbeat = now
 
-            # Cap batches per epoch.
             if batches >= max_batches:
                 break
 
@@ -594,7 +770,7 @@ def train_model(
 
 
 # =====================================================================
-# Prediction loop
+# Prediction Loop — Shared Across All Models
 # =====================================================================
 def predict_model(
     model: nn.Module,
@@ -606,20 +782,26 @@ def predict_model(
     max_batches: int = 200,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Run prediction for a trained model on given trajectories.
+    Run prediction for a trained model.
 
-    Shared architecture:
-      - Same window generator as training.
-      - No gradients (torch.no_grad()).
-      - Progress + heartbeat logging.
-      - max_batches caps runtime.
+    WHY THIS DESIGN:
+    ----------------
+    • Uses same window generator as training → consistent evaluation.
+    • No gradients (torch.no_grad()) → faster inference.
+    • Heartbeats provide observability.
+    • max_batches caps runtime.
+
+    RETURNS:
+        preds_all, targets_all — stacked arrays for metrics.
     """
     log(f"[RUN] {model_name} prediction ({phase_name}) started...")
+
     model.to(DEVICE)
     model.eval()
 
     preds_all: list[np.ndarray] = []
     targets_all: list[np.ndarray] = []
+
     batches = 0
     start_time = time.time()
     last_heartbeat = start_time
@@ -638,12 +820,15 @@ def predict_model(
             batches += 1
             now = time.time()
 
+            # Progress logging
             if batches % PROGRESS_BATCH_INTERVAL == 0:
                 elapsed = now - start_time
                 progress_batches = batches / max_batches
                 eta = (elapsed * max_batches / batches) - elapsed
+
                 cpu = psutil.cpu_percent()
                 mem = psutil.virtual_memory().used / (1024**3)
+
                 print(
                     f"[PREDICT] {phase_name} — "
                     f"Batches: {progress_batches * 100:.1f}% "
@@ -652,10 +837,12 @@ def predict_model(
                     f"CPU={cpu:.1f}%, RAM={mem:.2f} GB"
                 )
 
+            # Heartbeat logging
             if now - last_heartbeat >= HEARTBEAT_INTERVAL:
                 cpu = psutil.cpu_percent()
                 mem = psutil.virtual_memory().used / (1024**3)
                 elapsed = now - start_time
+
                 print(
                     f"[HEARTBEAT] {phase_name} prediction... "
                     f"elapsed={elapsed:.1f}s, CPU={cpu:.1f}%, RAM={mem:.2f} GB"
@@ -667,15 +854,21 @@ def predict_model(
 
     total_time = time.time() - start_time
     log(f"[RUN] {model_name} prediction ({phase_name}) complete — batches={batches}, time={total_time:.2f}s")
+
     return np.vstack(preds_all), np.vstack(targets_all)
 
 
 # =====================================================================
-# Saving + Loading
+# Saving + Loading Utilities
 # =====================================================================
 def save_model(model: nn.Module, name: str) -> None:
     """
-    Save model state_dict to disk under MODEL_DIR.
+    Save model state_dict to disk.
+
+    WHY SAVE:
+    ---------
+    • Enables reproducibility.
+    • Allows later evaluation without retraining.
     """
     path = os.path.join(MODEL_DIR, f"{name}_model.pt")
     torch.save(model.state_dict(), path)
@@ -684,7 +877,11 @@ def save_model(model: nn.Module, name: str) -> None:
 
 def save_normalization(mean: np.ndarray, std: np.ndarray) -> None:
     """
-    Save global normalization stats as NumPy arrays.
+    Save global normalization stats.
+
+    WHY SAVE:
+    ---------
+    • Ensures inference uses identical scaling as training.
     """
     np.save(os.path.join(MODEL_DIR, "norm_mean.npy"), mean)
     np.save(os.path.join(MODEL_DIR, "norm_std.npy"), std)
@@ -693,7 +890,12 @@ def save_normalization(mean: np.ndarray, std: np.ndarray) -> None:
 
 def save_metadata() -> None:
     """
-    Save model metadata (features, window sizes) to JSON for reproducibility.
+    Save model metadata (features, window sizes) to JSON.
+
+    WHY SAVE:
+    ---------
+    • Supports reproducibility.
+    • Allows external tools to understand model input format.
     """
     metadata = {
         "features": FEATURES,
@@ -701,14 +903,19 @@ def save_metadata() -> None:
         "future_steps": FUTURE_STEPS,
     }
     path = os.path.join(MODEL_DIR, "model_metadata.json")
+
     with open(path, "w") as f:
         json.dump(metadata, f)
+
     log(f"[SAVE] Metadata saved → {path}")
 
 
 def load_model(model_class: type[nn.Module], name: str) -> nn.Module:
     """
-    Load a saved model from disk and return it in eval mode on DEVICE.
+    Load a saved model from disk.
+
+    RETURNS:
+        Model instance in eval mode on DEVICE.
     """
     path = os.path.join(MODEL_DIR, f"{name}_model.pt")
     model = model_class()
@@ -728,24 +935,33 @@ def load_normalization() -> tuple[np.ndarray, np.ndarray]:
 
 
 # =====================================================================
-# Final summary table
+# Final Summary Table
 # =====================================================================
 def print_summary_table(results: dict[str, dict[str, float]]) -> None:
     """
     Print final metrics for all models in three formats:
-      - ASCII table
-      - Pretty per-model breakdown
-      - JSON dump
+
+        • ASCII table
+        • Pretty per-model breakdown
+        • JSON dump
+
+    WHY MULTIPLE FORMATS:
+    ---------------------
+    • ASCII table is easy to scan.
+    • Pretty format is human-readable.
+    • JSON is machine-readable for downstream tools.
     """
     print("\n================ FINAL SUMMARY (ASCII) ================")
     print("Model       | ADE_VAL | MDE_VAL | FDE_VAL | ADE_TEST | MDE_TEST | FDE_TEST")
     print("--------------------------------------------------------------------------")
+
     for model, metrics in results.items():
         print(
             f"{model:<11} {metrics['ADE_VAL']:<8.3f} {metrics['MDE_VAL']:<8.3f} "
             f"{metrics['FDE_VAL']:<8.3f} {metrics['ADE_TEST']:<9.3f} "
             f"{metrics['MDE_TEST']:<9.3f} {metrics['FDE_TEST']:<9.3f}"
         )
+
     print("=======================================================\n")
 
     print("================ FINAL SUMMARY (PRETTY) ===============")
@@ -759,6 +975,7 @@ def print_summary_table(results: dict[str, dict[str, float]]) -> None:
         print(f"    ADE: {metrics['ADE_TEST']:.3f}")
         print(f"    MDE: {metrics['MDE_TEST']:.3f}")
         print(f"    FDE: {metrics['FDE_TEST']:.3f}")
+
     print("=======================================================\n")
 
     print("================ FINAL SUMMARY (JSON) =================")
@@ -769,140 +986,24 @@ def print_summary_table(results: dict[str, dict[str, float]]) -> None:
 
 
 # =====================================================================
-# Main
+# Main Orchestration
 # =====================================================================
 def main() -> None:
     """
-    Orchestrate the full GeoLife pipeline:
+    Orchestrate the full GeoLife pipeline.
 
-      - Load and preprocess trajectories
-      - Compute and save normalization + metadata
-      - Split into train/val/test
-      - Evaluate baseline
-      - Train + evaluate GRU, LSTM, TCN
-      - Save models
-      - Print final summary
+    PIPELINE:
+    ---------
+    1. Load trajectories
+    2. Compute normalization
+    3. Split into train/val/test
+    4. Save normalization + metadata
+    5. Evaluate baseline
+    6. Train + evaluate GRU
+    7. Train + evaluate LSTM
+    8. Train + evaluate TCN
+    9. Save models
+    10. Print final summary
 
     Any exception is logged and re-raised.
-    """
-    log("[RUN] GeoLife pipeline run started.")
 
-    try:
-        trajectories = load_trajectories(PARQUET_PATH)
-        mean, std = compute_normalization(trajectories)
-        train_traj, val_traj, test_traj = split_trajectories(trajectories)
-
-        save_normalization(mean, std)
-        save_metadata()
-
-        results: dict[str, dict[str, float]] = {}
-
-        # -------------------------
-        # Baseline
-        # -------------------------
-        print("\n==============================")
-        print("Evaluating Baseline (VAL)")
-        print("==============================")
-        base_val_preds, base_val_targets = evaluate_baseline(val_traj, mean, std)
-        print_metrics("Baseline (VAL)", base_val_preds, base_val_targets)
-
-        print("\n==============================")
-        print("Evaluating Baseline (TEST)")
-        print("==============================")
-        base_test_preds, base_test_targets = evaluate_baseline(test_traj, mean, std)
-        print_metrics("Baseline (TEST)", base_test_preds, base_test_targets)
-
-        results["Baseline"] = {
-            "ADE_VAL": ade(base_val_preds, base_val_targets),
-            "MDE_VAL": mde(base_val_preds, base_val_targets),
-            "FDE_VAL": fde(base_val_preds, base_val_targets),
-            "ADE_TEST": ade(base_test_preds, base_test_targets),
-            "MDE_TEST": mde(base_test_preds, base_test_targets),
-            "FDE_TEST": fde(base_test_preds, base_test_targets),
-        }
-
-        # -------------------------
-        # GRU
-        # -------------------------
-        print("\n==============================")
-        print("Starting GRU training...")
-        print("==============================")
-        gru = GRUModel()
-        train_model(gru, "GRU", train_traj, mean, std)
-        save_model(gru, "gru")
-
-        gru_val_preds, gru_val_targets = predict_model(gru, "GRU", val_traj, mean, std, phase_name="VAL")
-        gru_test_preds, gru_test_targets = predict_model(gru, "GRU", test_traj, mean, std, phase_name="TEST")
-        print_metrics("GRU (VAL)", gru_val_preds, gru_val_targets)
-        print_metrics("GRU (TEST)", gru_test_preds, gru_test_targets)
-
-        results["GRU"] = {
-            "ADE_VAL": ade(gru_val_preds, gru_val_targets),
-            "MDE_VAL": mde(gru_val_preds, gru_val_targets),
-            "FDE_VAL": fde(gru_val_preds, gru_val_targets),
-            "ADE_TEST": ade(gru_test_preds, gru_test_targets),
-            "MDE_TEST": mde(gru_test_preds, gru_test_targets),
-            "FDE_TEST": fde(gru_test_preds, gru_test_targets),
-        }
-
-        # -------------------------
-        # LSTM
-        # -------------------------
-        print("\n==============================")
-        print("Starting LSTM training...")
-        print("==============================")
-        lstm = LSTMModel()
-        train_model(lstm, "LSTM", train_traj, mean, std)
-        save_model(lstm, "lstm")
-
-        lstm_val_preds, lstm_val_targets = predict_model(lstm, "LSTM", val_traj, mean, std, phase_name="VAL")
-        lstm_test_preds, lstm_test_targets = predict_model(lstm, "LSTM", test_traj, mean, std, phase_name="TEST")
-        print_metrics("LSTM (VAL)", lstm_val_preds, lstm_val_targets)
-        print_metrics("LSTM (TEST)", lstm_test_preds, lstm_test_targets)
-
-        results["LSTM"] = {
-            "ADE_VAL": ade(lstm_val_preds, lstm_val_targets),
-            "MDE_VAL": mde(lstm_val_preds, lstm_val_targets),
-            "FDE_VAL": fde(lstm_val_preds, lstm_val_targets),
-            "ADE_TEST": ade(lstm_test_preds, lstm_test_targets),
-            "MDE_TEST": mde(lstm_test_preds, lstm_test_targets),
-            "FDE_TEST": fde(lstm_test_preds, lstm_test_targets),
-        }
-
-        # -------------------------
-        # TCN
-        # -------------------------
-        print("\n==============================")
-        print("Starting TCN training...")
-        print("==============================")
-        tcn = TCNModel()
-        train_model(tcn, "TCN", train_traj, mean, std)
-        save_model(tcn, "tcn")
-
-        tcn_val_preds, tcn_val_targets = predict_model(tcn, "TCN", val_traj, mean, std, phase_name="VAL")
-        tcn_test_preds, tcn_test_targets = predict_model(tcn, "TCN", test_traj, mean, std, phase_name="TEST")
-        print_metrics("TCN (VAL)", tcn_val_preds, tcn_val_targets)
-        print_metrics("TCN (TEST)", tcn_test_preds, tcn_test_targets)
-
-        results["TCN"] = {
-            "ADE_VAL": ade(tcn_val_preds, tcn_val_targets),
-            "MDE_VAL": mde(tcn_val_preds, tcn_val_targets),
-            "FDE_VAL": fde(tcn_val_preds, tcn_val_targets),
-            "ADE_TEST": ade(tcn_test_preds, tcn_test_targets),
-            "MDE_TEST": mde(tcn_test_preds, tcn_test_targets),
-            "FDE_TEST": fde(tcn_test_preds, tcn_test_targets),
-        }
-
-        # -------------------------
-        # Final summary
-        # -------------------------
-        print_summary_table(results)
-        log("[RUN] GeoLife pipeline run completed successfully.")
-
-    except Exception as e:
-        log(f"[ERROR] Exception during run: {e}")
-        raise
-
-
-if __name__ == "__main__":
-    main()
