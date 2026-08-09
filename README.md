@@ -266,6 +266,67 @@ Open:
 ```
 notebooks/Visualization.ipynb
 ```
+---
+
+⚙️ Environment Variables & Configuration
+Several Python modules in this repository reference environment variables for paths, dataset locations, logging behavior, and model‑artifact output. If these variables are not set, you may encounter errors such as:
+
+KeyError: 'GEOLIFE_DATA_DIR'
+
+FileNotFoundError for processed parquet paths
+
+Missing log directories
+
+Missing artifact output paths
+
+To ensure the pipeline runs correctly, define the following environment variables before preprocessing or training.
+
+Required Environment Variables
+Variable	Purpose	Example Value
+GEOLIFE_DATA_DIR	Directory containing raw .plt files	/home/user/Capstone_Group16/data/raw
+GEOLIFE_PROCESSED_DIR	Output directory for processed parquet files	/home/user/Capstone_Group16/data/processed
+MODEL_ARTIFACT_DIR	Directory for predictions, metrics, windows, and loss curves	/home/user/Capstone_Group16/src/artifacts
+MODEL_LOG_DIR	Directory for training logs	/home/user/Capstone_Group16/src/models/logs
+
+
+Optional Environment Variables
+Variable	Purpose	Notes
+WINDOW_CAP	Maximum windows per trajectory	Helps stabilize TCN training
+BATCH_SIZE	Override default batch size	Useful for GPU training
+SEED	Reproducibility seed	Defaults set in code
+
+
+🔧 Setting Environment Variables
+macOS / Linux (bash/zsh)
+bash
+export GEOLIFE_DATA_DIR="/path/to/data/raw"
+export GEOLIFE_PROCESSED_DIR="/path/to/data/processed"
+export MODEL_ARTIFACT_DIR="/path/to/src/artifacts"
+export MODEL_LOG_DIR="/path/to/src/models/logs"
+To persist these across sessions, add them to:
+
+Code
+~/.bashrc
+# or
+~/.zshrc
+Windows (PowerShell)
+powershell
+setx GEOLIFE_DATA_DIR "C:\Users\Greg\Capstone_Group16\data\raw"
+setx GEOLIFE_PROCESSED_DIR "C:\Users\Greg\Capstone_Group16\data\processed"
+setx MODEL_ARTIFACT_DIR "C:\Users\Greg\Capstone_Group16\src\artifacts"
+setx MODEL_LOG_DIR "C:\Users\Greg\Capstone_Group16\src\models\logs"
+Restart your terminal after running setx.
+
+🧪 Verifying Environment Variables
+Run:
+
+bash
+python - << 'EOF'
+import os
+vars = ["GEOLIFE_DATA_DIR","GEOLIFE_PROCESSED_DIR","MODEL_ARTIFACT_DIR","MODEL_LOG_DIR"]
+print({v: os.getenv(v) for v in vars})
+EOF
+If any values show None, they are not set correctly.
 
 ---
 
