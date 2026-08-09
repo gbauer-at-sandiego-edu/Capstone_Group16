@@ -1,16 +1,28 @@
-# geolife_pipeline.py
-# GeoLife PLT → UTM → kinematics → parquet chunk processor
-# Standalone Windows-safe multiprocessing script
-#
-# This module converts raw GeoLife .plt GPS logs into a unified,
-# analysis-ready parquet dataset. It is designed for:
-#   - deterministic preprocessing
-#   - Windows-safe multiprocessing
-#   - chunked parquet writing to avoid memory blow-up
-#   - stable schema enforcement for downstream ML pipelines
-#
-# The output parquet file is consumed by the trajectory forecasting
-# models in models_geolife.py.
+"""
+geolife_pipeline.py
+====================
+
+This module converts raw GeoLife .plt GPS logs into a unified,
+analysis‑ready parquet dataset. It is intentionally engineered for:
+
+    • Deterministic preprocessing
+    • Windows‑safe multiprocessing (spawn mode)
+    • Chunked parquet writing to avoid memory blow‑up
+    • Stable schema enforcement for downstream ML pipelines
+    • Reproducible kinematic feature generation
+
+The output parquet file is consumed by the trajectory forecasting
+models in `models_geolife_tuned.py`.
+
+Every function in this module is designed to be:
+    • Pure (no hidden global state mutations)
+    • Serializable (safe for multiprocessing)
+    • Schema‑stable (no dtype drift across chunks)
+    • Fault‑tolerant (errors logged per‑file)
+
+This file is heavily commented to explain *how* and *why* each step
+exists, not just *what* it does.
+"""
 
 import os
 import time
@@ -20,55 +32,70 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool
 from pyproj import Proj
 
 # Local import: loader for GeoLife .plt files
-# This must be in the same directory as this module.
 from load_plt import load_plt_file
 
-# ================================================================
+
+# ======================================================================
 # 1. PATHS AND PROJECTION SETUP
-# ================================================================
-# DATA_ROOT is the root directory containing raw PLT files and
-# output directories. Using Path() ensures OS-independent behavior.
+# ======================================================================
+# Using Path() ensures OS‑independent behavior and avoids string‑based
+# path bugs. This root directory contains:
+#     • raw PLT files
+#     • chunk output directory
+#     • error logs
+#     • final concatenated parquet
 DATA_ROOT = Path(
     r"C:\Users\gb630\OneDrive\USD AAI\USD AAI\AAI-590 CAPSTONE\FINAL PROJECT\DATA"
 )
 
-# CHUNK_DIR: where each processed PLT file is written as a parquet chunk.
-# ERROR_DIR: where error logs for failed PLT files are written.
-# FINAL_PARQUET: the final concatenated parquet file.
+# Chunk directory:
+#     Each processed PLT file becomes one parquet chunk.
+#     This avoids loading all data into memory at once.
 CHUNK_DIR = DATA_ROOT / "chunks"
+
+# Error directory:
+#     Any file that fails processing gets a text log here.
 ERROR_DIR = DATA_ROOT / "errors"
+
+# Final parquet file:
+#     All chunks are concatenated into this single dataset.
 FINAL_PARQUET = DATA_ROOT / "geolife.parquet"
 
-# Ensure directories exist. This avoids runtime errors and makes the
-# pipeline idempotent.
+# Ensure directories exist so the pipeline is idempotent.
 CHUNK_DIR.mkdir(exist_ok=True)
 ERROR_DIR.mkdir(exist_ok=True)
 
-# UTM projection (zone 48 for Beijing region where GeoLife was collected).
+# ----------------------------------------------------------------------
+# UTM Projection Setup
+# ----------------------------------------------------------------------
+# GeoLife data was collected in Beijing, which lies in UTM Zone 48.
 # UTM is chosen because:
-#   - It provides metric coordinates (meters)
-#   - It avoids distortions inherent in lat/lon for distance calculations
+#     • It converts lat/lon → meters
+#     • It avoids distortions inherent in spherical coordinates
+#     • It makes dx/dy meaningful for kinematic calculations
 proj = Proj(proj="utm", zone=48, ellps="WGS84")
 
-# Columns that must be numeric. Enforcing numeric types prevents
-# downstream parquet schema mismatches and ML model crashes.
+# Columns that must be numeric. Enforcing numeric types prevents:
+#     • Parquet schema mismatches
+#     • Downstream ML crashes due to dtype drift
 numeric_cols = [
     "lat", "lon", "alt", "x", "y",
     "dx", "dy", "dt",
     "speed", "heading", "accel", "turn_rate"
 ]
 
-# ================================================================
+
+# ======================================================================
 # 1b. STABLE PARQUET SCHEMA
-# ================================================================
+# ======================================================================
 # A stable schema ensures:
-#   - All chunks have identical column types
-#   - The final concatenated parquet file is consistent
-#   - Downstream ML pipelines can rely on fixed dtypes
+#     • All chunks have identical column types
+#     • The final parquet file is consistent
+#     • ML pipelines can rely on float64 kinematic features
 PARQUET_SCHEMA = pa.schema([
     ("timestamp", pa.timestamp("ns")),
     ("lat", pa.float64()),
@@ -86,16 +113,25 @@ PARQUET_SCHEMA = pa.schema([
     ("source_file", pa.string()),
 ])
 
+
 def enforce_schema(df: pd.DataFrame) -> pd.DataFrame:
     """
     Enforce numeric and string types on the dataframe.
 
-    Why this matters:
-    - PLT files sometimes contain malformed numeric values.
-    - Parquet requires consistent column types across chunks.
-    - ML pipelines expect float64 for all kinematic features.
+    WHY THIS EXISTS:
+    ----------------
+    GeoLife PLT files occasionally contain malformed numeric values
+    (e.g., empty strings, corrupted altitudes). Parquet requires
+    consistent column types across all chunks, and ML pipelines expect
+    float64 for all kinematic features.
 
-    This function ensures the dataframe conforms to PARQUET_SCHEMA.
+    This function ensures:
+        • All numeric columns are float64
+        • source_file is a string
+        • Index is reset to avoid accidental index leakage
+
+    Returns:
+        A schema‑stable dataframe.
     """
     for col in numeric_cols:
         if col in df.columns:
@@ -106,37 +142,51 @@ def enforce_schema(df: pd.DataFrame) -> pd.DataFrame:
 
     return df.reset_index(drop=True)
 
-# ================================================================
+
+# ======================================================================
 # 2. WORKER FUNCTION (RUNS IN MULTIPROCESSING POOL)
-# ================================================================
+# ======================================================================
 def process_file(path_str: str):
     """
     Process a single GeoLife .plt file into a parquet chunk.
 
-    Steps:
-    1. Load PLT file into a dataframe.
-    2. Resample to 1-second intervals (GeoLife timestamps are irregular).
-    3. Project lat/lon → UTM (meters).
+    WHY THIS FUNCTION IS SELF‑CONTAINED:
+    ------------------------------------
+    Windows uses "spawn" multiprocessing, meaning:
+        • Each worker starts fresh (no shared globals)
+        • Functions must be fully serializable
+        • No hidden state can leak between workers
+
+    PIPELINE STEPS:
+    ---------------
+    1. Load PLT file → DataFrame
+    2. Resample timestamps to 1‑second intervals
+    3. Project lat/lon → UTM (meters)
     4. Compute kinematic features:
          dx, dy, dt, speed, heading, accel, turn_rate
-    5. Enforce schema and remove invalid rows.
-    6. Write parquet chunk.
+    5. Enforce schema
+    6. Write parquet chunk
 
-    This function is intentionally self-contained so it can run safely
-    inside Windows multiprocessing (spawn mode).
+    Returns:
+        ("OK", chunk_path, filename) or ("ERROR", None, filename)
     """
     path = Path(path_str)
+
     try:
-        # Load raw PLT file (lat, lon, alt, timestamp)
+        # --------------------------------------------------------------
+        # Load raw PLT file
+        # --------------------------------------------------------------
+        # load_plt_file returns:
+        #     timestamp, lat, lon, alt
         df = load_plt_file(path)
 
-        # ----------------------------------------------------------
-        # 1-second resampling
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
+        # 1‑second resampling
+        # --------------------------------------------------------------
         # GeoLife timestamps are irregular. Resampling:
-        #   - normalizes temporal spacing
-        #   - simplifies kinematic calculations
-        #   - ensures consistent dt = 1s for most rows
+        #     • normalizes temporal spacing
+        #     • simplifies kinematic calculations
+        #     • ensures dt ≈ 1s for most rows
         df = (
             df.set_index("timestamp")
               .resample("1s")
@@ -145,25 +195,26 @@ def process_file(path_str: str):
         df.reset_index(inplace=True)
         df = df.drop_duplicates("timestamp")
 
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
         # UTM projection (meters)
-        # ----------------------------------------------------------
-        # Using UTM allows dx/dy to be interpreted directly as meters.
+        # --------------------------------------------------------------
+        # Converts spherical coordinates → planar metric coordinates.
         x, y = proj(df["lon"].values, df["lat"].values)
         df["x"] = x
         df["y"] = y
         df = df.dropna(subset=["x", "y"])
 
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
         # Kinematic feature computation
-        # ----------------------------------------------------------
-        # dx, dy: displacement between consecutive points
-        # dt: time delta in seconds
+        # --------------------------------------------------------------
+        # dx, dy: displacement between consecutive points (meters)
         df["dx"] = df["x"].diff()
         df["dy"] = df["y"].diff()
+
+        # dt: time delta in seconds
         df["dt"] = df["timestamp"].diff().dt.total_seconds()
 
-        # Remove rows with non-positive dt (duplicate timestamps)
+        # Remove rows with non‑positive dt (duplicate timestamps)
         df = df[df["dt"] > 0]
 
         # speed: meters per second
@@ -187,19 +238,21 @@ def process_file(path_str: str):
         # Enforce stable schema
         df = enforce_schema(df)
 
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
         # Skip empty chunks
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
         if df.empty:
             err_path = ERROR_DIR / f"{path.stem}_empty.txt"
             with open(err_path, "w") as f:
                 f.write("Empty dataframe after processing.")
             return ("ERROR", None, path.name)
 
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
         # Write parquet chunk
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
         chunk_path = CHUNK_DIR / f"{path.name}.parquet"
+
+        # Convert DataFrame → Arrow Table → cast to stable schema
         tbl = pa.Table.from_pandas(df).cast(PARQUET_SCHEMA)
         pq.write_table(tbl, chunk_path)
 
@@ -212,52 +265,56 @@ def process_file(path_str: str):
             f.write(str(e))
         return ("ERROR", None, path.name)
 
-# ================================================================
-# 3. MAIN PIPELINE
-# ================================================================
+
+# ======================================================================
+# 3. MAIN PIPELINE ORCHESTRATION
+# ======================================================================
 def run_pipeline():
     """
     Main orchestration function.
 
     Responsibilities:
-    - Discover all PLT files recursively.
-    - Spawn a Windows-safe multiprocessing pool.
-    - Process each PLT file into a parquet chunk.
-    - Track progress, ETA, CPU, and memory usage.
-    - Concatenate all chunks into a final parquet file.
+        • Discover all PLT files recursively
+        • Spawn Windows‑safe multiprocessing pool
+        • Process each PLT file → parquet chunk
+        • Track progress, ETA, CPU, memory usage
+        • Concatenate all chunks into final parquet file
 
-    This design:
-    - avoids loading all PLT files into memory
-    - avoids loading all processed data into memory
-    - is robust to individual file failures
-    - is safe on Windows (spawn mode)
+    WHY THIS DESIGN:
+    ----------------
+    • Avoids loading all PLT files into memory
+    • Avoids loading all processed data into memory
+    • Robust to individual file failures
+    • Safe on Windows (spawn mode)
+    • Streaming parquet writer avoids memory blow‑up
     """
     plt_files = list(DATA_ROOT.rglob("*.plt"))
     print("PLT files discovered:", len(plt_files))
 
     start_time = time.time()
 
-    # Windows uses "spawn" multiprocessing, so we avoid cpu_count()
-    # assumptions and estimate physical cores conservatively.
+    # Windows uses "spawn" multiprocessing, meaning logical CPU count
+    # often overstates usable parallelism. We conservatively estimate
+    # physical cores to avoid oversubscription.
     logical_cpus = os.cpu_count()
     physical_cpus = logical_cpus // 2 if logical_cpus else 1
     workers = max(1, physical_cpus)
 
     print("System Info:")
-    print(f"  Logical CPUs:       {logical_cpus}")
+    print(f"  Logical CPUs:        {logical_cpus}")
     print(f"  Physical CPUs (est): {physical_cpus}")
     print(f"  Worker Processes:    {workers}")
     print("--------------------------------------------------")
 
     results = []
 
-    # ----------------------------------------------------------
+    # --------------------------------------------------------------
     # Multiprocessing pool
-    # ----------------------------------------------------------
+    # --------------------------------------------------------------
     # Using imap_unordered:
-    #   - results return as soon as workers finish
-    #   - avoids blocking on slow files
-    #   - improves throughput
+    #     • results return as soon as workers finish
+    #     • avoids blocking on slow files
+    #     • improves throughput
     with Pool(processes=workers) as pool:
         for i, res in enumerate(pool.imap_unordered(process_file, map(str, plt_files)), 1):
             status, chunk_path, name = res
@@ -283,9 +340,9 @@ def run_pipeline():
 
     print("\nChunk writing complete.")
 
-    # ----------------------------------------------------------
+    # --------------------------------------------------------------
     # Separate successes and errors
-    # ----------------------------------------------------------
+    # --------------------------------------------------------------
     chunk_files = [Path(cp) for status, cp, name in results if status == "OK"]
     errors = [name for status, cp, name in results if status == "ERROR"]
 
@@ -295,9 +352,9 @@ def run_pipeline():
         print("No chunks produced; aborting final parquet.")
         return
 
-    # ----------------------------------------------------------
+    # --------------------------------------------------------------
     # Concatenate parquet chunks
-    # ----------------------------------------------------------
+    # --------------------------------------------------------------
     print("Concatenating parquet chunks...")
 
     # ParquetWriter allows streaming writes without loading all chunks.
@@ -316,8 +373,9 @@ def run_pipeline():
     print("Parquet file written:", FINAL_PARQUET)
     print("Total time:", round(total_time, 2), "minutes")
 
-# ================================================================
+
+# ======================================================================
 # 4. ENTRY POINT
-# ================================================================
+# ======================================================================
 if __name__ == "__main__":
     run_pipeline()
