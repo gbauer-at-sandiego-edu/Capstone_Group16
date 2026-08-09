@@ -1,192 +1,236 @@
-# AAI-590 Capstone Project — Short-Horizon GPS Trajectory Forecasting
+---
 
-This repository contains the source code, notebooks, and documentation for the AAI‑590 Capstone Project at the University of San Diego. The project explores short‑horizon trajectory forecasting using only GPS timestamps and coordinates, with the goal of predicting an agent’s future position 1–5 seconds ahead.
+# 📘 **AAI‑590 Capstone Project — Short‑Horizon GPS Trajectory Forecasting**
 
-## Project Overview
+This repository contains the full source code, preprocessing pipeline, trained models, artifacts, and visualization tools for the **AAI‑590 Capstone Project** at the **University of San Diego**.
 
-Modern mobility systems often rely on GPS as the only consistently available signal, especially in transportation analytics, mobility‑as‑a‑service platforms, and safety‑critical monitoring systems. This project investigates whether accurate short‑term motion predictions can be made using only sparse GPS inputs and derived kinematic features.
+The project investigates whether accurate **short‑horizon (1–5 second)** motion predictions can be made using only **GPS coordinates** and derived **kinematic features**, using the **Microsoft GeoLife GPS Trajectory Dataset**.
 
-The project uses the Microsoft GeoLife GPS Trajectory Dataset, which provides high‑resolution movement data suitable for exploratory analysis, feature engineering, and sequence‑based forecasting models.
+---
 
-## Repository Structure
+# 🚀 **Project Overview**
+
+Modern mobility systems often rely on GPS as the only consistently available signal — especially in transportation analytics, mobility‑as‑a‑service platforms, and safety‑critical monitoring systems.
+
+This project explores whether short‑term trajectory forecasting can be achieved using:
+
+- Raw GPS timestamps  
+- Latitude/longitude  
+- Derived motion features (speed, heading, acceleration, turn rate)  
+- Sequence‑based forecasting models  
+
+We evaluate:
+
+- A **constant‑velocity baseline**
+- A **GRU sequence model**
+- An **LSTM sequence model**
+- A **tuned Temporal Convolutional Network (TCN)** with:
+  - Dilated convolutions  
+  - Residual connections  
+  - Sinusoidal positional encodings  
+  - Multi‑head self‑attention  
+
+---
+
+# 📂 **Repository Structure**
 
 ```
-AAI590-Capstone/
+Capstone_Group16/
 │
 ├── notebooks/
-│   ├── Capstone_Enhanced_Pipeline.ipynb
-│   └── (future) Week4_Modeling.ipynb
+│   └── Capstone_Enhanced_Pipeline.ipynb  # GeoLife Dataset EDA
+│   └── Visualization.ipynb        # Full visualization suite (loss curves, KDE, scatter, dashboards)
 │
 ├── data/
-│   ├── raw/
-│   │   └── (empty)  # Raw GeoLife data not included
-│   ├── processed/
-│   │   └── (optional) sample trajectory CSVs
-│   └── README.md    # Dataset documentation and citations
+│   ├── raw/                       # Raw GeoLife .plt files (not included in repo)
+│   └── processed/                 # Processed parquet + optional CSVs
 │
 ├── src/
-│   ├── processing.py
-│   ├── geolife_pipeline_enhanced.py
-│   └── load_plt.py
+│   ├── geolife_pipeline.py        # Preprocessing pipeline (PLT → parquet)
+│   ├── load_plt.py                # PLT loader + timestamp cleanup
+│   ├── models_geolife.py          # Baseline GRU/LSTM/TCN pipeline
+│   ├── models_geolife_tuned.py    # Tuned TCN pipeline (dilations + attention)
+│   ├── visualization.py           # Optional standalone plotting utilities
+│   │
+│   ├── models/
+│   │   ├── gru_model.pt           # Trained GRU weights
+│   │   ├── lstm_model.pt          # Trained LSTM weights
+│   │   ├── tcn_model.pt           # Trained tuned TCN weights
+│   │   ├── GRU_metadata.json
+│   │   ├── LSTM_metadata.json
+│   │   ├── TCN_metadata.json
+│   │   └── logs/                  # Training logs (kept for reproducibility)
+│   │
+│   └── artifacts/
+│       ├── predictions/           # Saved inputs/preds/targets for all models
+│       ├── loss/                  # Loss curves for each model
+│       ├── metrics/               # Final ADE/FDE/MDE metrics
+│       └── windows/               # Window counts + diagnostics
 │
 ├── reports/
 │   ├── AAI590 Capstone Project Template.docx
-│   └── (future) Final_Report/
+│   └── Final_Report/              # Final capstone report (in progress)
 │
-├── README.md
-└── .gitignore
+└── README.md
 ```
 
-## Data Location
+---
 
-Download the GeoLife dataset from Microsoft Research and place all `.plt` files under:
+# 🛠️ **Preprocessing Pipeline**
+
+The preprocessing pipeline converts raw GeoLife `.plt` files into a unified parquet dataset.
+
+### Steps:
+1. Load PLT file  
+2. Clean timestamps  
+3. Remove duplicates  
+4. Enforce monotonic time  
+5. Project lat/lon → UTM  
+6. Compute kinematic features  
+7. Save parquet chunks  
+8. Merge into final `geolife.parquet`
+
+### Output:
+A clean dataset with:
+
+- `x, y` projected coordinates  
+- `speed`  
+- `heading`  
+- `accel`  
+- `turn_rate`  
+
+Stored at:
+
+```
+src/data/processed/geolife.parquet
+```
+
+---
+
+# 🤖 **Modeling Pipeline**
+
+All models predict **5 future displacement steps** based on a **20‑step input window**.
+
+### Models Included
+
+| Model | Description |
+|-------|-------------|
+| **Baseline** | Constant‑velocity extrapolation |
+| **GRU** | Lightweight recurrent model |
+| **LSTM** | Long‑range recurrent model |
+| **TCN** | Dilated convolutional network |
+| **Tuned TCN** | TCN + residuals + positional encodings + attention |
+
+### Training Features
+
+- Global normalization  
+- Per‑window normalization  
+- Glitch filtering  
+- Window caps to prevent memory blow‑ups  
+- Heartbeat logging (CPU/RAM)  
+- Loss curve saving  
+- Prediction artifact saving  
+
+---
+
+# 📈 **Visualization Suite**
+
+The notebook `Visualization.ipynb` provides:
+
+### Training Diagnostics
+- Loss curves (early convergence + full)
+- Window distribution histograms
+
+### Error Analysis
+- KDE error distributions
+- Scatter plots of final displacement
+- Residual error vectors
+- Multi‑panel trajectory dashboards
+
+### Model Comparison
+- Side‑by‑side GRU vs LSTM vs TCN
+- ADE / FDE / MDE dashboard
+
+All visualizations use a **USD Torero theme** for consistent styling.
+
+---
+
+# 📊 **Metrics**
+
+Each model is evaluated using:
+
+- **ADE** — Average Displacement Error  
+- **FDE** — Final Displacement Error  
+- **MDE** — Maximum Displacement Error  
+
+Metrics are saved under:
+
+```
+src/artifacts/metrics/
+```
+
+---
+
+# 📦 **Model Artifacts**
+
+Trained model weights are included in the repo for reproducibility:
+
+```
+src/models/gru_model.pt
+src/models/lstm_model.pt
+src/models/tcn_model.pt
+```
+
+Metadata files describe:
+
+- Feature ordering  
+- Input window size  
+- Future step count  
+
+---
+
+# ▶️ **How to Run**
+
+### 1. Preprocess GeoLife Data
+Place `.plt` files under:
 
 ```
 data/raw/
 ```
 
-This directory is intentionally empty in the repository.
+Run:
 
-## Required Code Updates for Repo Execution
-
-The preprocessing modules in `src/` contain several variables and imports that must be updated to run correctly inside this repository.
-
-### 1. Update DATA_ROOT (critical)
-
-In `src/geolife_pipeline_enhanced.py`, replace the hard‑coded Windows path:
-
-```python
-DATA_ROOT = Path(
-    r"C:\Users\gb630\OneDrive\USD AAI\USD AAI\AAI-590 CAPSTONE\FINAL PROJECT\DATA"
-)
+```bash
+python src/geolife_pipeline.py
 ```
 
-with the repo‑correct path:
+### 2. Train Models
 
-```python
-DATA_ROOT = Path("data/raw")
+```bash
+python src/models_geolife.py
+python src/models_geolife_tuned.py
 ```
 
-This ensures the pipeline discovers `.plt` files inside the repository.
-
-### 2. Update Output Directories (recommended)
-
-In `src/geolife_pipeline_enhanced.py`, change:
-
-```python
-CHUNK_DIR = DATA_ROOT / "chunks"
-ERROR_DIR = DATA_ROOT / "errors"
-FINAL_PARQUET = DATA_ROOT / "geolife.parquet"
-```
-
-to:
-
-```python
-CHUNK_DIR = Path("data/processed/chunks")
-ERROR_DIR = Path("data/processed/errors")
-FINAL_PARQUET = Path("data/processed/geolife.parquet")
-```
-
-This keeps raw and processed data properly separated.
-
-### 3. Fix Import in processing.py (critical)
-
-In `src/processing.py`, replace the placeholder import:
-
-```python
-from your_notebook_imports import load_plt_file
-```
-
-with the correct repo‑local import:
-
-```python
-from load_plt import load_plt_file
-```
-
-This ensures the module can load PLT files correctly.
-
-### 4. Projection Zone (optional)
-
-Both `processing.py` and `geolife_pipeline_enhanced.py` use:
-
-```python
-proj = Proj(proj="utm", zone=48, ellps="WGS84")
-```
-
-Zone 48N is correct for Beijing (most GeoLife data).  
-No change required unless multi‑zone support is desired.
-
-## Preprocessing Modules
-
-### load_plt.py
-Loads and cleans a single `.plt` file, converts timestamps, removes duplicates, enforces monotonic time, and returns:
-
-```
-timestamp, lat, lon, alt
-```
-
-### processing.py
-Resamples trajectories to 1‑second intervals, projects coordinates into UTM, computes kinematic features, enforces numeric schema, and returns a fully processed DataFrame.
-
-### geolife_pipeline_enhanced.py
-A multiprocessing pipeline that:
-
-- Discovers all `.plt` files under `data/raw/`
-- Processes each file using `load_plt.py` and `processing.py`
-- Writes parquet chunks
-- Logs errors and empty outputs
-- Concatenates all chunks into a final unified parquet dataset
-- Produces a summary report with row counts, timing, and error statistics
-
-This is the main entry point for large‑scale preprocessing.
-
-## How to Use This Repository
-
-### 1. Download the GeoLife Dataset
-
-Place all `.plt` files under:
-
-```
-data/raw/
-```
-
-### 2. Run the Enhanced Pipeline Notebook
+### 3. Visualize Results
 
 Open:
 
 ```
-notebooks/Capstone_Enhanced_Pipeline.ipynb
+notebooks/Visualization.ipynb
 ```
 
-This notebook demonstrates:
+---
 
-- Loading PLT files
-- Applying preprocessing functions
-- Inspecting kinematic features
-- Visualizing trajectories and motion patterns
+# 📚 **References**
 
-### 3. Run the Full Multiprocessing Pipeline
+  [github.com](https://github.com/gbauer-at-sandiego-edu/Capstone_Group16)
 
-From the repository root:
+---
 
-```
-python src/geolife_pipeline_enhanced.py
-```
+# 🎓 **About**
 
-Ensure `DATA_ROOT` inside the module points to:
+This project was completed as part of the **AAI‑590 Capstone** in the  
+**Master of Science in Applied Artificial Intelligence** program  
+at the **University of San Diego**.
 
-```
-data/raw
-```
-
-### 4. Reports
-
-The `reports/` directory contains the working capstone document and will later include the final report and supporting materials.
-
-## References (APA 7)
-
-Zheng, Y., Li, Q., Chen, Y., Xie, X., & Ma, W. Y. (2008). Understanding mobility based on GPS data. Proceedings of the 10th International Conference on Ubiquitous Computing, 312–321. [https://doi.org/10.1145/1409635.1409677](https://doi.org/10.1145/1409635.1409677)
-
-Zheng, Y., Xie, X., & Ma, W. Y. (2010). GeoLife: A collaborative social networking service among user, location and trajectory. IEEE Data Engineering Bulletin, 33(2), 32–39.
-
-Microsoft Research Asia. (2012). GeoLife GPS Trajectory Dataset (Version 1.3). [https://www.microsoft.com/en-us/research/project/geolife-building-social-networks-using-human-location-history/](https://www.microsoft.com/en-us/research/project/geolife-building-social-networks-using-human-location-history/)
+---
