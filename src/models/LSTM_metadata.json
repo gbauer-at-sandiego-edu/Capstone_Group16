@@ -1,0 +1,8 @@
+{
+  "model_name": "LSTM",
+  "epochs": 20,
+  "lr": 0.001,
+  "max_batches": 200,
+  "max_windows_per_traj": 8000,
+  "timestamp": "2026-08-02 13:11:02"
+}
