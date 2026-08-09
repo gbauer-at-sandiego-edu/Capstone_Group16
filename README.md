@@ -1,179 +1,227 @@
----
-
-# 📘 **AAI‑590 Capstone Project — Short‑Horizon GPS Trajectory Forecasting**
-
-This repository contains the full source code, preprocessing pipeline, trained models, artifacts, and visualization tools for the **AAI‑590 Capstone Project** at the **University of San Diego**.
-
-The project investigates whether accurate **short‑horizon (1–5 second)** motion predictions can be made using only **GPS coordinates** and derived **kinematic features**, using the **Microsoft GeoLife GPS Trajectory Dataset**.
+```
+# 🚀 Short‑Horizon GPS Trajectory Forecasting  
+### Deep Sequence Models for Real‑Time Mobility Analytics  
+**GRU • LSTM • Temporal Convolutional Network (TCN)**  
+*AAI‑590 Capstone — University of San Diego*
 
 ---
 
-# 🚀 **Project Overview**
+## 📘 Abstract
 
-Modern mobility systems often rely on GPS as the only consistently available signal — especially in transportation analytics, mobility‑as‑a‑service platforms, and safety‑critical monitoring systems.
+Short‑horizon trajectory forecasting is essential for mobility systems that operate with limited or degraded sensor availability. This project evaluates whether accurate 1–5 second motion predictions can be produced using only GPS coordinates and derived kinematic features from the Microsoft GeoLife dataset. A unified forecasting pipeline was developed using engineered motion variables—including normalized positional deltas, speed, heading, acceleration, and turn rate—and three deep sequence models: a GRU, an LSTM, and a Temporal Convolutional Network (TCN) with dilated convolutions, residual connections, positional encodings, and multi‑head attention.
 
-This project explores whether short‑term trajectory forecasting can be achieved using:
+The system incorporates global normalization, per‑window normalization, adaptive window caps, and a streaming window generator to ensure stable training on long and heterogeneous trajectories. Models were evaluated using displacement‑based metrics (ADE, FDE, MDE) computed in normalized coordinate space.
 
-- Raw GPS timestamps  
-- Latitude/longitude  
-- Derived motion features (speed, heading, acceleration, turn rate)  
-- Sequence‑based forecasting models  
-
-We evaluate:
-
-- A **constant‑velocity baseline**
-- A **GRU sequence model**
-- An **LSTM sequence model**
-- A **tuned Temporal Convolutional Network (TCN)** with:
-  - Dilated convolutions  
-  - Residual connections  
-  - Sinusoidal positional encodings  
-  - Multi‑head self‑attention  
+Results show that all learned models outperform a constant‑velocity baseline, with the tuned LSTM achieving the strongest overall performance across validation and test sets. After addressing memory and preprocessing constraints, the tuned TCN achieved competitive ADE and FDE values but retained higher maximum displacement errors. These findings demonstrate that accurate short‑term motion forecasting is feasible using only GPS‑derived features and lightweight temporal models, providing a strong foundation for real‑time mobility analytics and future work in sampling‑rate robustness, transformer architectures, and deployable inference modules.
 
 ---
 
-# 📂 **Repository Structure**
+## 📂 Repository Structure
 
 ```
 Capstone_Group16/
 │
 ├── notebooks/
-│   └── Capstone_Enhanced_Pipeline.ipynb  # GeoLife Dataset EDA
-│   └── Visualization.ipynb        # Full visualization suite (loss curves, KDE, scatter, dashboards)
+│   ├── Capstone_Enhanced_Pipeline.ipynb
+│   └── Visualization.ipynb
 │
 ├── data/
-│   ├── raw/                       # Raw GeoLife .plt files (not included in repo)
-│   └── processed/                 # Processed parquet + optional CSVs
+│   ├── raw/            # Raw GeoLife .plt files (not included)
+│   └── processed/      # Parquet + optional CSVs
 │
 ├── src/
-│   ├── geolife_pipeline.py        # Preprocessing pipeline (PLT → parquet)
-│   ├── load_plt.py                # PLT loader + timestamp cleanup
-│   ├── models_geolife.py          # Baseline GRU/LSTM/TCN pipeline
-│   ├── models_geolife_tuned.py    # Tuned TCN pipeline (dilations + attention)
-│   ├── visualization.py           # Optional standalone plotting utilities
+│   ├── geolife_pipeline.py
+│   ├── load_plt.py
+│   ├── models_geolife.py
+│   ├── models_geolife_tuned.py
+│   ├── visualization.py
 │   │
 │   ├── models/
-│   │   ├── gru_model.pt           # Trained GRU weights
-│   │   ├── lstm_model.pt          # Trained LSTM weights
-│   │   ├── tcn_model.pt           # Trained tuned TCN weights
+│   │   ├── gru_model.pt
+│   │   ├── lstm_model.pt
+│   │   ├── tcn_model.pt
 │   │   ├── GRU_metadata.json
 │   │   ├── LSTM_metadata.json
 │   │   ├── TCN_metadata.json
-│   │   └── logs/                  # Training logs (kept for reproducibility)
+│   │   └── logs/
 │   │
 │   └── artifacts/
-│       ├── predictions/           # Saved inputs/preds/targets for all models
-│       ├── loss/                  # Loss curves for each model
-│       ├── metrics/               # Final ADE/FDE/MDE metrics
-│       └── windows/               # Window counts + diagnostics
+│       ├── predictions/
+│       ├── loss/
+│       ├── metrics/
+│       └── windows/
 │
 ├── reports/
 │   ├── AAI590 Capstone Project Template.docx
-│   └── Final_Report/              # Final capstone report (in progress)
+│   └── Final_Report/
 │
 └── README.md
 ```
 
 ---
 
-# 🛠️ **Preprocessing Pipeline**
+## 🛠️ Preprocessing Pipeline
 
-The preprocessing pipeline converts raw GeoLife `.plt` files into a unified parquet dataset.
+The GeoLife dataset contains over 17,000 trajectories sampled at 1–5 second intervals.  
+Preprocessing includes:
 
-### Steps:
-1. Load PLT file  
-2. Clean timestamps  
-3. Remove duplicates  
-4. Enforce monotonic time  
-5. Project lat/lon → UTM  
-6. Compute kinematic features  
-7. Save parquet chunks  
-8. Merge into final `geolife.parquet`
+1. Timestamp cleanup  
+2. Duplicate removal  
+3. Monotonic time enforcement  
+4. Global normalization  
+5. Per‑window normalization  
+6. Kinematic feature derivation  
+7. Sliding‑window extraction  
+8. Adaptive window caps for long trajectories  
+9. Parquet output generation  
 
-### Output:
-A clean dataset with:
-
-- `x, y` projected coordinates  
-- `speed`  
-- `heading`  
-- `accel`  
-- `turn_rate`  
-
-Stored at:
-
-```
-src/data/processed/geolife.parquet
-```
+**Important:**  
+All modeling is performed in **normalized latitude/longitude space**.  
+Metrics reflect **normalized displacement**, not physical meters.
 
 ---
 
-# 🤖 **Modeling Pipeline**
+## 🤖 Modeling Pipeline
 
-All models predict **5 future displacement steps** based on a **20‑step input window**.
+### **Input Features (6 total)**  
+- Δlatitude (normalized)  
+- Δlongitude (normalized)  
+- Speed  
+- Heading  
+- Acceleration  
+- Turn rate  
 
-### Models Included
+### **Forecasting Task**  
+- **Input:** 20‑step window  
+- **Output:** 5 future displacement steps (10 values)
 
+### **Models Evaluated**
 | Model | Description |
 |-------|-------------|
-| **Baseline** | Constant‑velocity extrapolation |
-| **GRU** | Lightweight recurrent model |
-| **LSTM** | Long‑range recurrent model |
-| **TCN** | Dilated convolutional network |
-| **Tuned TCN** | TCN + residuals + positional encodings + attention |
+| Constant‑Velocity Baseline | Extrapolates last observed displacement |
+| GRU | 64‑unit recurrent model |
+| LSTM | 64‑unit recurrent model |
+| TCN | 5 dilated conv layers + residuals + positional encodings + multi‑head attention |
 
-### Training Features
-
-- Global normalization  
-- Per‑window normalization  
-- Glitch filtering  
-- Window caps to prevent memory blow‑ups  
-- Heartbeat logging (CPU/RAM)  
-- Loss curve saving  
-- Prediction artifact saving  
+### **Training Details**
+- Optimizer: **Adam (lr = 1e‑3)**  
+- Loss: **MSE**  
+- Epochs: **20**  
+- Window generator: **streaming**, memory‑safe  
+- Normalization: **global + per‑window**  
+- Dataset split: **60/20/20** by trajectory  
 
 ---
 
-# 📈 **Visualization Suite**
+# 🧠 Model Cards
 
-The notebook `Visualization.ipynb` provides:
+## 📘 GRU Model Card
 
-### Training Diagnostics
-- Loss curves (early convergence + full)
-- Window distribution histograms
+**Model Type:** Gated Recurrent Unit (GRU)  
+**Hidden Size:** 64  
+**Purpose:** Lightweight baseline recurrent model for short‑horizon displacement forecasting.
 
-### Error Analysis
-- KDE error distributions
-- Scatter plots of final displacement
-- Residual error vectors
-- Multi‑panel trajectory dashboards
+### Inputs
+- 20‑step window  
+- Features: Δlat, Δlon, speed, heading, acceleration, turn rate  
 
-### Model Comparison
-- Side‑by‑side GRU vs LSTM vs TCN
-- ADE / FDE / MDE dashboard
+### Outputs
+- 5 future displacement steps (10 values)
 
-All visualizations use a **USD Torero theme** for consistent styling.
+### Performance
+- **Val ADE:** 0.012  
+- **Test ADE:** 0.014  
+- Outperforms constant‑velocity baseline  
+- Stable convergence
 
----
-
-# 📊 **Metrics**
-
-Each model is evaluated using:
-
-- **ADE** — Average Displacement Error  
-- **FDE** — Final Displacement Error  
-- **MDE** — Maximum Displacement Error  
-
-Metrics are saved under:
-
-```
-src/artifacts/metrics/
-```
+### Limitations
+- Slightly worse temporal stability than LSTM  
+- Sensitive to irregular sampling intervals  
 
 ---
 
-# 📦 **Model Artifacts**
+## 📘 LSTM Model Card
 
-Trained model weights are included in the repo for reproducibility:
+**Model Type:** Long Short‑Term Memory (LSTM)  
+**Hidden Size:** 64  
+**Purpose:** Capture long‑range temporal dependencies for stable short‑horizon forecasting.
+
+### Performance
+- **Val ADE:** 0.006  
+- **Test ADE:** 0.009  
+- **Best overall performance across ADE, FDE, MDE**  
+- Tightest error distribution  
+
+### Limitations
+- Slightly higher inference latency than GRU  
+- Sensitive to heading discontinuities  
+
+---
+
+## 📘 TCN Model Card
+
+**Model Type:** Dilated Temporal Convolutional Network + Multi‑Head Attention  
+**Layers:** 5 dilated conv blocks (dilations: 1, 2, 4, 8, 16)  
+**Attention:** 4‑head self‑attention  
+
+### Performance (Pre‑Tuning)
+- **Val ADE:** 0.014  
+- **Test ADE:** 0.048  
+- **Val MDE:** 0.765  
+
+### Performance (Tuned)
+- **Val ADE:** 0.0024  
+- **Test ADE:** 0.0025  
+- Competitive ADE/FDE  
+- **Higher MDE** than LSTM  
+
+### Limitations
+- Sensitive to long trajectories  
+- Requires careful preprocessing  
+- Higher worst‑case displacement errors  
+
+---
+
+## 📊 Results
+
+### **Pre‑Tuning Results**
+| Model | Val ADE | Test ADE | Val MDE | Test MDE |
+|-------|---------|----------|---------|----------|
+| Baseline | — | — | **8.448** | — |
+| GRU | 0.012 | 0.014 | — | — |
+| LSTM | **0.006** | **0.009** | — | — |
+| TCN (pre‑tuning) | 0.014 | 0.048 | 0.765 | — |
+
+### **Tuned TCN Results**
+| Model | Val ADE | Test ADE | MDE Behavior |
+|-------|---------|----------|--------------|
+| TCN (tuned) | **0.0024** | **0.0025** | Higher than LSTM |
+
+### Key Findings
+- **LSTM achieved the strongest overall performance**  
+- **GRU performed competitively**  
+- **TCN required preprocessing fixes**  
+- After tuning, **TCN achieved excellent ADE/FDE**, but **higher MDE**  
+- All models showed **smooth, monotonic convergence**  
+
+---
+
+## 📈 Visualization Suite
+
+The `Visualization.ipynb` notebook provides:
+
+- Training loss curves  
+- KDE displacement‑error distributions  
+- Predicted vs. true displacement scatter plots  
+- ADE/FDE/MDE dashboards  
+- Window diagnostics  
+- USD‑themed visualizations  
+
+---
+
+## 📦 Model Artifacts
+
+Trained weights and metadata are included:
 
 ```
 src/models/gru_model.pt
@@ -181,18 +229,18 @@ src/models/lstm_model.pt
 src/models/tcn_model.pt
 ```
 
-Metadata files describe:
+Metadata files specify:
 
 - Feature ordering  
-- Input window size  
-- Future step count  
+- Window size  
+- Forecast horizon  
 
 ---
 
-# ▶️ **How to Run**
+## ▶️ How to Run
 
 ### 1. Preprocess GeoLife Data
-Place `.plt` files under:
+Place `.plt` files in:
 
 ```
 data/raw/
@@ -205,14 +253,12 @@ python src/geolife_pipeline.py
 ```
 
 ### 2. Train Models
-
 ```bash
 python src/models_geolife.py
 python src/models_geolife_tuned.py
 ```
 
 ### 3. Visualize Results
-
 Open:
 
 ```
@@ -221,16 +267,21 @@ notebooks/Visualization.ipynb
 
 ---
 
-# 📚 **References**
+## 🔮 Future Work
 
-  [github.com](https://github.com/gbauer-at-sandiego-edu/Capstone_Group16)
+- Heading unwrapping  
+- Timestamp interpolation  
+- Sampling‑rate degradation experiments  
+- Transformer‑based architectures  
+- Mode‑specific modeling  
+- Real‑time inference module with latency profiling  
 
 ---
 
-# 🎓 **About**
+## 🎓 About
 
-This project was completed as part of the **AAI‑590 Capstone** in the  
+This project was completed as part of **AAI‑590 Capstone** in the  
 **Master of Science in Applied Artificial Intelligence** program  
 at the **University of San Diego**.
 
----
+```
